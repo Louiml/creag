@@ -2,6 +2,7 @@ import sys
 from PyQt5.QtCore import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtWebEngineWidgets import *
+from PyQt5.QtWebEngineWidgets import QWebEnginePage
 from PyQt5.QtGui import *
 
 class HistoryDialog(QDialog):
@@ -52,14 +53,16 @@ class HistoryDialog(QDialog):
             pass
 
 class BrowserTab(QWebEngineView):
-    def __init__(self, tabs, update_url_func, add_to_history_func):
+    def __init__(self, tabs, browser, update_url_func, add_to_history_func):
         super(BrowserTab, self).__init__()
         self.tabs = tabs
+        self.browser = browser
         self.setUrl(QUrl('https://search.louiml.net'))
         self.titleChanged.connect(self.update_tab_title)
         self.iconChanged.connect(self.update_tab_icon)
         self.urlChanged.connect(update_url_func)
         self.urlChanged.connect(add_to_history_func)
+        self.loadFinished.connect(self.on_load_finished)
 
     def update_tab_title(self, title):
         current_index = self.tabs.currentIndex()
@@ -70,6 +73,48 @@ class BrowserTab(QWebEngineView):
         if icon.isNull():
             icon = QIcon('./public/no_icon_icon.png')
         self.tabs.setTabIcon(current_index, icon)
+        
+    def on_load_finished(self):
+        current_url = self.url().toString()
+        if current_url.endswith('.json'):
+            self.add_json_highlighting()
+            
+    def createWindow(self, _type):
+        if QApplication.keyboardModifiers() == Qt.ShiftModifier:
+            new_tab = BrowserTab(self.tabs, self.browser, self.browser.update_url, self.browser.add_to_history)
+            tab_index = self.tabs.addTab(new_tab, 'New Tab')
+            self.tabs.setCurrentIndex(tab_index)
+            return new_tab
+        return QWebEngineView.createWindow(self, _type)
+    
+    def add_json_highlighting(self):
+        def inject_prism_js(result=None):
+            with open('./prismjs/prism.js', 'r') as f:
+                prism_js = f.read()
+            self.page().runJavaScript(prism_js, wrap_content)
+        
+        def wrap_content(result=None):
+            wrap_js = """
+            var content = document.body.innerText;
+            document.body.innerHTML = '<pre><code class=\\"language-json\\">' + content + '</code></pre>';
+            """
+            self.page().runJavaScript(wrap_js, highlight_content)
+        
+        def highlight_content(result=None):
+            highlight_js = "Prism.highlightAll();"
+            self.page().runJavaScript(highlight_js)
+        
+        with open('./prismjs/prism.css', 'r') as f:
+            prism_css = f.read()
+        
+        css_code = f"""
+        var style = document.createElement('style');
+        style.type = 'text/css';
+        style.innerHTML = `{prism_css}`;
+        document.head.appendChild(style);
+        """
+        
+        self.page().runJavaScript(css_code, inject_prism_js)
 
 class Browser(QMainWindow):
     def __init__(self):
@@ -86,7 +131,7 @@ class Browser(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.showMaximized()
 
-        initial_tab = BrowserTab(self.tabs, self.update_url, self.add_to_history) 
+        initial_tab = BrowserTab(self.tabs, self, self.update_url, self.add_to_history)
         self.tabs.addTab(initial_tab, 'New Tab')
         
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -160,6 +205,23 @@ class Browser(QMainWindow):
     def show_history(self):
         self.history_dialog = HistoryDialog(self)
         self.history_dialog.exec_()
+        
+    def create_new_tab(self):
+        new_tab = BrowserTab(self.tabs, self, self.update_url, self.add_to_history)
+        tab_index = self.tabs.addTab(new_tab, 'New Tab')
+        self.tabs.setCurrentIndex(tab_index)
+        
+    def show_cookies(self):
+        profile = QWebEngineProfile.defaultProfile()
+        cookie_store = profile.cookieStore()
+        cookie_store.cookieAdded.connect(self.print_cookie)
+
+    def print_cookie(self, cookie):
+        print("Cookie added:")
+        print("Name:", cookie.name().data().decode("utf-8"))
+        print("Value:", cookie.value().data().decode("utf-8"))
+        print("Domain:", cookie.domain().encode("utf-8"))
+        print("Path:", cookie.path().encode("utf-8"))
 
     def navigate_to_url(self, url=None):
         if url is None:
@@ -179,10 +241,13 @@ class Browser(QMainWindow):
         current_url = self.tabs.currentWidget().url().toString()
         self.url_bar.setText(current_url)
 
-    def create_new_tab(self):
-        new_tab = BrowserTab(self.tabs, self.update_url, self.add_to_history)
-        tab_index = self.tabs.addTab(new_tab, 'New Tab')
-        self.tabs.setCurrentIndex(tab_index)
+    def createWindow(self, _type):
+        if QApplication.keyboardModifiers() == Qt.ShiftModifier:
+            new_tab = BrowserTab(self.browser, self.tabs, self.browser.update_url, self.browser.add_to_history)
+            tab_index = self.tabs.addTab(new_tab, 'New Tab')
+            self.tabs.setCurrentIndex(tab_index)
+            return new_tab
+        return QWebEngineView.createWindow(self, _type)
 
     def close_tab(self, index):
         self.tabs.removeTab(index)
